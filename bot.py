@@ -191,54 +191,6 @@ async def search_pagination_callback(update: Update, context: ContextTypes.DEFAU
 
     if user_id not in SEARCH_CACHE:
         await query.answer("انتهت صلاحية البحث، أرسل الكلمة من جديد.", show_alert=True)
-        return
-
-    # استخراج الاستعلام القديم إن أمكن أو تحديث الصفحة
-    entries = SEARCH_CACHE[user_id]
-    start_idx = page * 5
-    end_idx = start_idx + 5
-    current_entries = entries[start_idx:end_idx]
-
-    text_lines = ["🔍 نتائج بحث اليوتيوب:\n"]
-    for entry in current_entries:
-        title = entry.get('title', 'بدون عنوان')
-        uploader = entry.get('uploader', 'غير معروف')
-        duration_sec = entry.get('duration', 0)
-        mins = duration_sec // 60
-        secs = duration_sec % 60
-        duration_str = f"{mins}:{secs:02d}"
-        
-        views = entry.get('view_count', 0)
-        views_str = f"{views / 1000000:.1f}M" if views > 1000000 else str(views)
-        v_id = entry.get('id')
-        
-        text_lines.append(f"🎬 {title}")
-        text_lines.append(f"👤 {uploader}")
-        text_lines.append(f"⏱ {duration_str} - 👁 {views_str}")
-        text_lines.append(f"🔗 /dl_{v_id}\n")
-
-    response_text = "\n".join(text_lines)
-
-    keyboard = []
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("« السابق", callback_data=f"search_page_{page-1}"))
-    if end_idx < len(entries):
-        nav_buttons.append(InlineKeyboardButton("التالي »", callback_data=f"search_page_{page+1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
-
-    await query.message.edit_text(response_text, parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard))
-
-# نظام التحميل والتحقق من المدة (10 دقائق)
-async def process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
-    msg = await update.message.reply_text("⏳ جاري فحص الرابط ومعلومات المقطع...")
-
-    ydl_opts = {'quiet': True}
-    try:
-        with YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            duration_sec = info.get('duration', 0)
 import logging
 import os
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -310,7 +262,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     text = update.message.text.strip()
 
-    # معالجة روابط البحث المختصرة التي تبدأ بـ /dl_
     if text.startswith("/dl_"):
         video_id = text.replace("/dl_", "")
         real_url = f"https://www.youtube.com/watch?v={video_id}"
@@ -395,7 +346,6 @@ async def search_pagination_callback(update: Update, context: ContextTypes.DEFAU
 async def process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     msg = await update.message.reply_text("⏳ جاري فحص الرابط وجلب المقطع...")
 
-    # التحقق من المدة والتحميل الفعلي
     output_template = "video_%(id)s.%(ext)s"
     ydl_opts_info = {'quiet': True}
     
@@ -466,5 +416,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
