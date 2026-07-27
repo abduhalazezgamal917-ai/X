@@ -243,7 +243,7 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
     status_msg = await query.message.reply_text("🚀 جاري التحميل والمعالجة... الرجاء الانتظار.")
     output_template = f"zenox_dl_{short_id}.%(ext)s"
     
-        if action == "vid":
+            if action == "vid":
         ydl_opts = {
             'format': 'bestvideo[filesize<45M][ext=mp4]+bestaudio[ext=m4a]/best[filesize<45M][ext=mp4]/best',
             'extractor_args': {
@@ -251,9 +251,15 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                     'player_client': ['android', 'ios']
                 }
             },
+            # أضف هذه السطور لتجبر تويتر وبقية المنصات على الاستجابة فوراً وعدم التعليق:
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'geo_bypass': True,
+            'nocheckcertificate': True,
+            
             'outtmpl': output_template,
             'quiet': True
         }
+
 
     elif action == "voc":
         ydl_opts = {
