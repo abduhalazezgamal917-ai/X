@@ -243,19 +243,18 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
     status_msg = await query.message.reply_text("🚀 جاري التحميل والمعالجة... الرجاء الانتظار.")
     output_template = f"zenox_dl_{short_id}.%(ext)s"
     
-    if action == "vid":
+        if action == "vid":
         ydl_opts = {
-            'format': 'bestvideo+bestaudio/best',
+            'format': 'bestvideo[filesize<45M][ext=mp4]+bestaudio[ext=m4a]/best[filesize<45M][ext=mp4]/best',
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'ios']
+                }
+            },
             'outtmpl': output_template,
             'quiet': True
         }
-    elif action == "aud":
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'outtmpl': output_template,
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
-            'quiet': True
-        }
+
     elif action == "voc":
         ydl_opts = {
             'format': 'bestaudio/best',
