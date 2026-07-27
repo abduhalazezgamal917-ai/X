@@ -1,12 +1,33 @@
 import logging
 import os
 import uuid
+import threading
+import subprocess
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 )
 from yt_dlp import YoutubeDL
 
+# ================== سيرفر وهمي لإرضاء منصة Render ==================
+class DummyHealthCheckHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ZenoX Bot is Alive & Running!")
+
+    def log_message(self, format, *args):
+        return
+
+def start_dummy_server():
+    port = int(os.environ.get("PORT", 8080))
+    server = HTTPServer(("0.0.0.0", port), DummyHealthCheckHandler)
+    server.serve_forever()
+
+threading.Thread(target=start_dummy_server, daemon=True).start()
+
+# ================== إعدادات البوت الأساسية ==================
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("ZenoXBot")
 
@@ -15,7 +36,7 @@ CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
 SEARCH_CACHE = {}
-URL_CACHE = {} # لتخزين الروابط الطويلة وربطها بمعرف قصير للأزرار
+URL_CACHE = {}
 
 async def check_user_subscription(bot, user_id: int) -> bool:
     if user_id == ADMIN_ID:
@@ -77,7 +98,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         await perform_youtube_search(update, context, text, page=0)
 
-# ================== نظام البحث (نفس القديم) ==================
+# ================== نظام البحث ==================
 async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, page: int = 0):
     status_msg = await update.message.reply_text(f"🔍 جاري البحث عن: <b>{query}</b>...", parse_mode="HTML")
     ydl_opts = {'extract_flat': True, 'quiet': True, 'default_search': 'ytsearch15'}
@@ -136,7 +157,23 @@ async def search_pagination_callback(update: Update, context: ContextTypes.DEFAU
         return
     await send_search_page(query.message, user_id, "نتائج البحث", int(query.data.split("_")[-1]))
 
-# ================== النظام الجديد: جلب البيانات وعرض الأزرار ==================
+# ================== دالة ضغط وتقليص الفيديو ==================
+def compress_video(input_file: str, output_file: str) -> str:
+    cmd = [
+        'ffmpeg', '-y', '-i', input_file,
+        '-c:v', 'libx264', '-crf', '28', '-preset', 'fast',
+        '-c:a', 'aac', '-b:a', '128k',
+        output_file
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            return output_file
+    except Exception as e:
+        logger.error(f"Compression failed: {e}")
+    return input_file
+
+# ================== جلب بيانات الرابط والأزرار ==================
 async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     msg = await update.message.reply_text("⏳ جاري فحص الرابط من قبل ZenoX...")
     
@@ -144,11 +181,10 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     try:
         with YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
-    except Exception as e:
+    except Exception:
         await msg.edit_text("❌ عذراً، لم أتمكن من التعرف على هذا الرابط.")
         return
 
-    # إنشاء كود قصير للرابط عشان حجم الـ callback_data في تيليجرام محدود
     short_id = str(uuid.uuid4())[:8]
     URL_CACHE[short_id] = url
 
@@ -178,12 +214,12 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     else:
         await update.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
 
-# ================== نظام التحميل الفعلي بعد ضغط الزر ==================
+# ================== التحميل والضغط التلقائي ==================
 async def download_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    action = query.data.split("_")[1] # vid, aud, voc
+    action = query.data.split("_")[1]
     short_id = query.data.split("_")[2]
     
     url = URL_CACHE.get(short_id)
@@ -191,15 +227,12 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
         await query.message.reply_text("❌ انتهت صلاحية الرابط، أرسله من جديد.")
         return
 
-    status_msg = await query.message.reply_text("🚀 جاري التحميل والضغط... الرجاء الانتظار.")
-
+    status_msg = await query.message.reply_text("🚀 جاري التحميل والمعالجة... الرجاء الانتظار.")
     output_template = f"zenox_dl_{short_id}.%(ext)s"
     
-    # إعدادات التقليص الذكية للـ Video
     if action == "vid":
-        # يبحث عن جودة أقل من 45 ميجا، وإذا مافي يختار أسوأ جودة عشان يقلص الحجم اجباري
         ydl_opts = {
-            'format': 'bestvideo[filesize<45M]+bestaudio/best[filesize<45M]/worst',
+            'format': 'bestvideo+bestaudio/best',
             'outtmpl': output_template,
             'quiet': True
         }
@@ -214,7 +247,7 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
         ydl_opts = {
             'format': 'bestaudio/best',
             'outtmpl': output_template,
-            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}], # صيغة البصمة
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}],
             'quiet': True
         }
 
@@ -222,12 +255,22 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
     try:
         with YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
-            # استخراج اسم الملف النهائي
             file_path = ydl.prepare_filename(info_dict)
             if action == "aud": file_path = file_path.rsplit('.', 1)[0] + '.mp3'
             if action == "voc": file_path = file_path.rsplit('.', 1)[0] + '.ogg'
 
         if os.path.exists(file_path):
+            # فحص الحجم وضغط الفيديو إذا تخطى 48 ميجابايت
+            if action == "vid":
+                file_size_mb = os.path.getsize(file_path) / (1024 * 1024)
+                if file_size_mb > 48:
+                    await status_msg.edit_text("🗜 حجم المقطع كبير، جاري تقليصه وضغط الحجم ليناسب تيليجرام...")
+                    compressed_path = file_path.rsplit('.', 1)[0] + '_compressed.mp4'
+                    final_compressed = compress_video(file_path, compressed_path)
+                    if os.path.exists(final_compressed) and os.path.getsize(final_compressed) < os.path.getsize(file_path):
+                        os.remove(file_path)
+                        file_path = final_compressed
+
             await status_msg.edit_text("📤 جاري إرسال الملف...")
             with open(file_path, 'rb') as file:
                 if action == "vid":
@@ -241,7 +284,7 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
             await status_msg.edit_text("❌ حدث خطأ أثناء تجهيز الملف.")
     except Exception as e:
         logger.error(f"Error: {e}")
-        await status_msg.edit_text("❌ عذراً، فشل التحميل. قد يكون المقطع محمي أو كبير جداً.")
+        await status_msg.edit_text("❌ عذراً، فشل التحميل. قد يكون المقطع محمي أو غير متاح.")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -253,14 +296,12 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/dl_"), handle_message))
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(search_pagination_callback, pattern="^search_page_"))
-    
-    # المعالج الجديد لخيارات التحميل الثلاثة
     app.add_handler(CallbackQueryHandler(download_action_callback, pattern="^down_"))
-    
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("البوت يعمل بكامل طاقته (V2)...")
-    app.run_polling()
+    print("البوت يعمل واستقر بنجاح مع السيرفر الوهمي وتقليص المقاطع...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
+
