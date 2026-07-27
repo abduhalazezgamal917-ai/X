@@ -1,5 +1,6 @@
 import logging
 import os
+import uuid
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
@@ -14,6 +15,7 @@ CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
 SEARCH_CACHE = {}
+URL_CACHE = {} # لتخزين الروابط الطويلة وربطها بمعرف قصير للأزرار
 
 async def check_user_subscription(bot, user_id: int) -> bool:
     if user_id == ADMIN_ID:
@@ -28,12 +30,10 @@ async def check_user_subscription(bot, user_id: int) -> bool:
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user:
-        return
+    if not user: return
 
     if not await check_user_subscription(context.bot, user.id):
-        channel_username = CHANNEL.lstrip("@")
-        channel_link = f"https://t.me/{channel_username}"
+        channel_link = f"https://t.me/{CHANNEL.lstrip('@')}"
         text = "🚧┇عذراً، عليك الاشتراك في قناة البوت أولاً. 🚧\n🔍 ثم اضغط تحقق."
         markup = InlineKeyboardMarkup([
             [InlineKeyboardButton("اشترك في القناة 📡", url=channel_link)],
@@ -43,8 +43,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
 
     welcome_text = (
-        f"أهلاً بك يا <b>{user.first_name}</b> في بوت التحميل والبحث 🚀\n\n"
-        "• أرسل أي رابط (يوتيوب، تويتر X) لتحميله فوراً.\n"
+        f"أهلاً بك يا <b>{user.first_name}</b> في بوت ZenoX للتحميل والبحث 🚀\n\n"
+        "• أرسل أي رابط (يوتيوب، تيك توك، انستا، سناب، فيسبوك، بينترست) لتحميله فوراً.\n"
         "• أو أرسل أي نص للبحث المباشر في يوتيوب!"
     )
     await update.message.reply_text(welcome_text, parse_mode="HTML")
@@ -60,8 +60,7 @@ async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
-    if not user:
-        return
+    if not user: return
 
     if not await check_user_subscription(context.bot, user.id):
         await update.message.reply_text("🚧 عذراً، يجب الاشتراك في قناة البوت أولاً لاستخدامه.")
@@ -72,15 +71,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if text.startswith("/dl_"):
         video_id = text.replace("/dl_", "")
         real_url = f"https://www.youtube.com/watch?v={video_id}"
-        await process_download(update, context, real_url)
+        await process_link_info(update, context, real_url)
     elif text.startswith("http"):
-        await process_download(update, context, text)
+        await process_link_info(update, context, text)
     else:
         await perform_youtube_search(update, context, text, page=0)
 
+# ================== نظام البحث (نفس القديم) ==================
 async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str, page: int = 0):
     status_msg = await update.message.reply_text(f"🔍 جاري البحث عن: <b>{query}</b>...", parse_mode="HTML")
-    
     ydl_opts = {'extract_flat': True, 'quiet': True, 'default_search': 'ytsearch15'}
     try:
         with YoutubeDL(ydl_opts) as ydl:
@@ -101,110 +100,148 @@ async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_T
 async def send_search_page(message, user_id, query, page):
     entries = SEARCH_CACHE.get(user_id, [])
     start_idx = page * 5
-    end_idx = start_idx + 5
-    current_entries = entries[start_idx:end_idx]
+    current_entries = entries[start_idx:start_idx + 5]
 
-    if not current_entries:
-        return
+    if not current_entries: return
 
     text_lines = [f"🔍 نتائج بحث اليوتيوب لـ \"{query}\"\n"]
     for entry in current_entries:
         title = entry.get('title', 'بدون عنوان')
         uploader = entry.get('uploader', 'غير معروف')
-        duration_sec = entry.get('duration', 0)
-        mins, secs = divmod(duration_sec, 60)
-        
+        mins, secs = divmod(entry.get('duration', 0), 60)
         views = entry.get('view_count', 0)
         views_str = f"{views / 1000000:.1f}M" if views and views > 1000000 else str(views or 0)
-        v_id = entry.get('id')
         
         text_lines.append(f"🎬 {title}")
         text_lines.append(f"👤 {uploader}")
         text_lines.append(f"⏱ {mins}:{secs:02d} - 👁 {views_str}")
-        text_lines.append(f"🔗 /dl_{v_id}\n")
+        text_lines.append(f"🔗 /dl_{entry.get('id')}\n")
 
-    response_text = "\n".join(text_lines)
-    keyboard = []
-    nav_buttons = []
-    if page > 0:
-        nav_buttons.append(InlineKeyboardButton("« السابق", callback_data=f"search_page_{page-1}"))
-    if end_idx < len(entries):
-        nav_buttons.append(InlineKeyboardButton("التالي »", callback_data=f"search_page_{page+1}"))
-    if nav_buttons:
-        keyboard.append(nav_buttons)
+    keyboard, nav_buttons = [], []
+    if page > 0: nav_buttons.append(InlineKeyboardButton("« السابق", callback_data=f"search_page_{page-1}"))
+    if start_idx + 5 < len(entries): nav_buttons.append(InlineKeyboardButton("التالي »", callback_data=f"search_page_{page+1}"))
+    if nav_buttons: keyboard.append(nav_buttons)
 
-    markup = InlineKeyboardMarkup(keyboard) if keyboard else None
     try:
-        await message.edit_text(response_text, parse_mode="HTML", reply_markup=markup)
+        await message.edit_text("\n".join(text_lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
     except Exception:
-        await message.reply_text(response_text, parse_mode="HTML", reply_markup=markup)
+        await message.reply_text("\n".join(text_lines), parse_mode="HTML", reply_markup=InlineKeyboardMarkup(keyboard) if keyboard else None)
 
 async def search_pagination_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    page = int(query.data.split("_")[-1])
     user_id = query.from_user.id
-
     if user_id not in SEARCH_CACHE:
         await query.answer("انتهت صلاحية البحث، أرسل الكلمة من جديد.", show_alert=True)
         return
-    await send_search_page(query.message, user_id, "نتائج البحث", page)
+    await send_search_page(query.message, user_id, "نتائج البحث", int(query.data.split("_")[-1]))
 
-async def process_download(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
-    msg = await update.message.reply_text("⏳ جاري فحص الرابط وجلب المقطع...")
-
-    output_template = "video_%(id)s.%(ext)s"
-    ydl_opts_info = {'quiet': True}
+# ================== النظام الجديد: جلب البيانات وعرض الأزرار ==================
+async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
+    msg = await update.message.reply_text("⏳ جاري فحص الرابط من قبل ZenoX...")
     
+    ydl_opts_info = {'quiet': True}
     try:
         with YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
-            duration_sec = info.get('duration', 0)
-            duration_mins = duration_sec / 60
-    except Exception:
-        await msg.edit_text("❌ عذراً، لم أتمكن من جلب بيانات هذا الرابط أو أنه غير مدعوم.")
+    except Exception as e:
+        await msg.edit_text("❌ عذراً، لم أتمكن من التعرف على هذا الرابط.")
         return
 
-    if duration_mins > 10:
-        markup = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⭐ ارسل نجمة", callback_data="send_star")]
-        ])
-        await msg.edit_text(
-            f"⚠️ <b>هذا المقطع حجمه أكبر من 10 دقائق للتحميل!</b>\n"
-            f"مدة الفيديو: {duration_mins:.1f} دقائق.\n"
-            "للاستمرار والتحميل، يرجى إرسال نجمة ⭐",
-            parse_mode="HTML",
-            reply_markup=markup
-        )
+    # إنشاء كود قصير للرابط عشان حجم الـ callback_data في تيليجرام محدود
+    short_id = str(uuid.uuid4())[:8]
+    URL_CACHE[short_id] = url
+
+    title = info.get('title', 'بدون عنوان')
+    uploader = info.get('uploader', info.get('extractor', 'غير معروف'))
+    thumbnail = info.get('thumbnail', None)
+    duration = info.get('duration', 0)
+    mins, secs = divmod(duration, 60)
+    views = info.get('view_count', 0)
+    views_str = f"{views / 1000000:.1f}M" if views and views > 1000000 else str(views or 0)
+
+    caption = (
+        f"🎬 <b>{title}</b>\n\n"
+        f"👤 {uploader}\n"
+        f"⏱ {mins:02d}:{secs:02d} - 👁 {views_str}"
+    )
+
+    markup = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🎥 مقطع فيديو", callback_data=f"down_vid_{short_id}")],
+        [InlineKeyboardButton("🎵 ملف صوتي", callback_data=f"down_aud_{short_id}"),
+         InlineKeyboardButton("🎙 بصمة صوتية", callback_data=f"down_voc_{short_id}")]
+    ])
+
+    await msg.delete()
+    if thumbnail:
+        await update.message.reply_photo(photo=thumbnail, caption=caption, parse_mode="HTML", reply_markup=markup)
+    else:
+        await update.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
+
+# ================== نظام التحميل الفعلي بعد ضغط الزر ==================
+async def download_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    
+    action = query.data.split("_")[1] # vid, aud, voc
+    short_id = query.data.split("_")[2]
+    
+    url = URL_CACHE.get(short_id)
+    if not url:
+        await query.message.reply_text("❌ انتهت صلاحية الرابط، أرسله من جديد.")
         return
 
-    await msg.edit_text("🚀 جاري تحميل الفيديو وإرساله إليك...")
+    status_msg = await query.message.reply_text("🚀 جاري التحميل والضغط... الرجاء الانتظار.")
 
-    ydl_opts_download = {
-        'format': 'best[ext=mp4]/best',
-        'outtmpl': output_template,
-        'quiet': True
-    }
+    output_template = f"zenox_dl_{short_id}.%(ext)s"
+    
+    # إعدادات التقليص الذكية للـ Video
+    if action == "vid":
+        # يبحث عن جودة أقل من 45 ميجا، وإذا مافي يختار أسوأ جودة عشان يقلص الحجم اجباري
+        ydl_opts = {
+            'format': 'bestvideo[filesize<45M]+bestaudio/best[filesize<45M]/worst',
+            'outtmpl': output_template,
+            'quiet': True
+        }
+    elif action == "aud":
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_template,
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+            'quiet': True
+        }
+    elif action == "voc":
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': output_template,
+            'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}], # صيغة البصمة
+            'quiet': True
+        }
 
     file_path = None
     try:
-        with YoutubeDL(ydl_opts_download) as ydl:
+        with YoutubeDL(ydl_opts) as ydl:
             info_dict = ydl.extract_info(url, download=True)
+            # استخراج اسم الملف النهائي
             file_path = ydl.prepare_filename(info_dict)
+            if action == "aud": file_path = file_path.rsplit('.', 1)[0] + '.mp3'
+            if action == "voc": file_path = file_path.rsplit('.', 1)[0] + '.ogg'
 
-        if file_path and os.path.exists(file_path):
-            with open(file_path, 'rb') as video_file:
-                await update.message.reply_video(
-                    video=video_file,
-                    caption="🎬 تم التحميل بنجاح بواسطة بوت ZenoX",
-                    supports_streaming=True
-                )
-            await msg.delete()
+        if os.path.exists(file_path):
+            await status_msg.edit_text("📤 جاري إرسال الملف...")
+            with open(file_path, 'rb') as file:
+                if action == "vid":
+                    await query.message.reply_video(video=file, caption="🎬 تم التحميل بواسطة ZenoX", supports_streaming=True)
+                elif action == "aud":
+                    await query.message.reply_audio(audio=file, caption="🎵 تم التحميل بواسطة ZenoX")
+                elif action == "voc":
+                    await query.message.reply_voice(voice=file, caption="🎙 تم التحميل بواسطة ZenoX")
+            await status_msg.delete()
         else:
-            await msg.edit_text("❌ حدث خطأ أثناء تجهيز ملف الفيديو.")
+            await status_msg.edit_text("❌ حدث خطأ أثناء تجهيز الملف.")
     except Exception as e:
-        logger.error(f"Download error: {e}")
-        await msg.edit_text("❌ عذراً، فشل تحميل الفيديو. تأكد أن الرابط صالح.")
+        logger.error(f"Error: {e}")
+        await status_msg.edit_text("❌ عذراً، فشل التحميل. قد يكون المقطع محمي أو كبير جداً.")
     finally:
         if file_path and os.path.exists(file_path):
             os.remove(file_path)
@@ -216,11 +253,14 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/dl_"), handle_message))
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
     app.add_handler(CallbackQueryHandler(search_pagination_callback, pattern="^search_page_"))
+    
+    # المعالج الجديد لخيارات التحميل الثلاثة
+    app.add_handler(CallbackQueryHandler(download_action_callback, pattern="^down_"))
+    
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("البوت يعمل بكامل طاقته...")
+    print("البوت يعمل بكامل طاقته (V2)...")
     app.run_polling()
 
 if __name__ == "__main__":
     main()
-
