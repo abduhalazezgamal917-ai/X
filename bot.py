@@ -1,3 +1,16 @@
+import subprocess
+import sys
+
+# تحديث تلقائي لمكتبة yt-dlp لأحدث نسخة عند كل تشغيل للبوت
+try:
+    print("🔄 جاري التحقق من وجود تحديث لمكتبة yt-dlp...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], 
+                   stdout=subprocess.DEVNULL, 
+                   stderr=subprocess.DEVNULL)
+    print("✅ تم تحديث مكتبة yt-dlp بنجاح!")
+except Exception as e:
+    print(f"⚠️ فشل التحديث التلقائي: {e}")
+
 import logging
 import os
 import uuid
