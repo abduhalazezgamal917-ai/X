@@ -10,7 +10,7 @@ from yt_dlp import YoutubeDL
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("ZenoXBot")
 
-TOKEN = "8548413224:AAGxpeH4E95UHG5s2qk80kxIgp63uLrPp-g"
+TOKEN = "8548413224:AAFmj0JaobA3cNjOW9lNHIiBEpmOV410vuU"
 CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
