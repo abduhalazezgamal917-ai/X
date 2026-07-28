@@ -191,17 +191,18 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     msg = await update.message.reply_text("⏳ جاري فحص الرابط من قبل ZenoX...")
     
             # إعدادات التخفي ليوتيوب
-    ydl_opts_info = {
+        ydl_opts_info = {
         'quiet': True,
         'extractor_args': {
             'youtube': {
-                'player_client': ['android', 'ios']
+                'player_client': ['tv_embedded', 'mweb']
             }
         },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'geo_bypass': True,
         'nocheckcertificate': True
     }
+
     
     try:
         with YoutubeDL(ydl_opts_info) as ydl:
