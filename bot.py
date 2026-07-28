@@ -190,13 +190,27 @@ def compress_video(input_file: str, output_file: str) -> str:
 async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     msg = await update.message.reply_text("⏳ جاري فحص الرابط من قبل ZenoX...")
     
-    ydl_opts_info = {'quiet': True}
+            # إعدادات التخفي ليوتيوب
+    ydl_opts_info = {
+        'quiet': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios']
+            }
+        },
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'geo_bypass': True,
+        'nocheckcertificate': True
+    }
+    
     try:
         with YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
-    except Exception:
+    except Exception as e:
+        print(f"Error: {e}")
         await msg.edit_text("❌ عذراً، لم أتمكن من التعرف على هذا الرابط.")
         return
+
 
     short_id = str(uuid.uuid4())[:8]
     URL_CACHE[short_id] = url
