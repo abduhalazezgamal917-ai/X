@@ -351,7 +351,7 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
     print("البوت يعمل واستقر بنجاح مع السيرفر الوهمي وتقليص المقاطع...")
-    app.run_polling(drop_pending_updates=True)
+    app.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
