@@ -186,42 +186,59 @@ def compress_video(input_file: str, output_file: str) -> str:
         logger.error(f"Compression failed: {e}")
     return input_file
 
-# ================== جلب بيانات الرابط والأزرار ==================
+import json
+import urllib.request
+
+# ================== جلب بيانات الرابط والأزرار (مع خطة طوارئ بديلة) ==================
 async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     msg = await update.message.reply_text("⏳ جاري فحص الرابط من قبل ZenoX...")
     
-            # إعدادات التخفي ليوتيوب
-        ydl_opts_info = {
+    title = None
+    uploader = "غير معروف"
+    thumbnail = None
+    duration = 0
+    views = 0
+
+    # المحاولة الأولى: عبر yt-dlp
+    ydl_opts_info = {
         'quiet': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['tv_embedded', 'mweb']
-            }
-        },
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'extractor_args': {'youtube': {'player_client': ['tv_embedded', 'mweb']}},
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         'geo_bypass': True,
         'nocheckcertificate': True
     }
-
     
     try:
         with YoutubeDL(ydl_opts_info) as ydl:
             info = ydl.extract_info(url, download=False)
+            title = info.get('title')
+            uploader = info.get('uploader', info.get('extractor', 'غير معروف'))
+            thumbnail = info.get('thumbnail')
+            duration = info.get('duration', 0)
+            views = info.get('view_count', 0)
     except Exception as e:
-        print(f"Error: {e}")
+        logger.error(f"yt-dlp error: {e}")
+        # المحاولة الثانية (خطة الطوارئ): استخدام oEmbed الرسمي لليوتيوب (تتخطى حظر Render تماماً)
+        try:
+            oembed_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+            req = urllib.request.Request(oembed_url, headers={'User-Agent': 'Mozilla/5.0'})
+            with urllib.request.urlopen(req) as response:
+                data = json.loads(response.read().decode())
+                title = data.get('title')
+                uploader = data.get('author_name', 'غير معروف')
+                thumbnail = data.get('thumbnail_url')
+        except Exception as ex:
+            logger.error(f"oEmbed error: {ex}")
+
+    # إذا فشلت كل المحاولات فقط تظهر الرسالة
+    if not title:
         await msg.edit_text("❌ عذراً، لم أتمكن من التعرف على هذا الرابط.")
         return
-
 
     short_id = str(uuid.uuid4())[:8]
     URL_CACHE[short_id] = url
 
-    title = info.get('title', 'بدون عنوان')
-    uploader = info.get('uploader', info.get('extractor', 'غير معروف'))
-    thumbnail = info.get('thumbnail', None)
-    duration = info.get('duration', 0)
     mins, secs = divmod(duration, 60)
-    views = info.get('view_count', 0)
     views_str = f"{views / 1000000:.1f}M" if views and views > 1000000 else str(views or 0)
 
     caption = (
@@ -241,6 +258,7 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await update.message.reply_photo(photo=thumbnail, caption=caption, parse_mode="HTML", reply_markup=markup)
     else:
         await update.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
+
 
 # ================== التحميل والضغط التلقائي ==================
 async def download_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
