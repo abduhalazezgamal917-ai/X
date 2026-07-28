@@ -47,6 +47,145 @@ logger = logging.getLogger("ZenoXBot")
 TOKEN = "8548413224:AAFmj0JaobA3cNjOW9lNHIiBEpmOV410vuU"
 CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
+import json
+from datetime import datetime, timedelta
+
+# ================== نظام الإحصائيات الحقيقية ==================
+STATS_FILE = "stats.json"
+
+def load_stats():
+    if os.path.exists(STATS_FILE):
+        try:
+            with open(STATS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "users": {},
+        "total_requests": 0,
+        "successful_downloads": 0,
+        "failed_downloads": 0,
+        "platforms": {
+            "يوتيوب": 0,
+            "تويتر/X": 0,
+            "سناب شات": 0,
+            "تيك توك": 0,
+            "إنستغرام": 0,
+            "بينترست": 0,
+            "أخرى": 0
+        }
+    }
+
+stats = load_stats()
+BOT_START_TIME = datetime.now()
+
+def save_stats():
+    try:
+        with open(STATS_FILE, "w", encoding="utf-8") as f:
+            json.dump(stats, f, ensure_ascii=False, indent=2)
+    except Exception:
+        pass
+
+def track_user_activity(user_id):
+    stats["users"][str(user_id)] = datetime.now().isoformat()
+    save_stats()
+
+def track_platform_request(url):
+    stats["total_requests"] += 1
+    url_lower = url.lower()
+    if "youtube.com" in url_lower or "youtu.be" in url_lower:
+        stats["platforms"]["يوتيوب"] += 1
+    elif "twitter.com" in url_lower or "x.com" in url_lower:
+        stats["platforms"]["تويتر/X"] += 1
+    elif "tiktok.com" in url_lower:
+        stats["platforms"]["تيك توك"] += 1
+    elif "instagram.com" in url_lower:
+        stats["platforms"]["إنستغرام"] += 1
+    elif "snapchat.com" in url_lower:
+        stats["platforms"]["سناب شات"] += 1
+    elif "pinterest.com" in url_lower or "pin.it" in url_lower:
+        stats["platforms"]["بينترست"] += 1
+    else:
+        stats["platforms"]["أخرى"] += 1
+    save_stats()
+
+def track_download_status(success: bool):
+    if success:
+        stats["successful_downloads"] += 1
+    else:
+        stats["failed_downloads"] += 1
+    save_stats()
+# ================== دالة لوحة الإحصائيات للمشرف ==================
+async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        return  # يتجاهل الطلب تماماً إذا لم تكن أنت المشرف
+
+    msg_or_query = update.callback_query.message if update.callback_query else update.message
+
+    now = datetime.now()
+    total_users = len(stats["users"])
+    active_today = 0
+    active_7d = 0
+    active_30d = 0
+
+    for uid, last_str in stats["users"].items():
+        try:
+            last_time = datetime.fromisoformat(last_str)
+            diff = now - last_time
+            if diff <= timedelta(days=1): active_today += 1
+            if diff <= timedelta(days=7): active_7d += 1
+            if diff <= timedelta(days=30): active_30d += 1
+        except Exception:
+            pass
+
+    total_req = stats["total_requests"]
+    success_dl = stats["successful_downloads"]
+    failed_dl = stats["failed_downloads"]
+    total_dl = success_dl + failed_dl
+    success_rate = (success_dl / total_dl * 100) if total_dl > 0 else 0.0
+
+    uptime_diff = datetime.now() - BOT_START_TIME
+    days = uptime_diff.days
+    hours, remainder = divmod(uptime_diff.seconds, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    sorted_platforms = sorted(stats["platforms"].items(), key=lambda x: x[1], reverse=True)
+    platform_lines = [f"{idx}. {p_name} : <b>{count}</b>" for idx, (p_name, count) in enumerate(sorted_platforms, 1)]
+
+    stats_msg = (
+        "📊 <b>لوحة إحصائيات ZenoX Bot</b>\n"
+        "═"*25 + "\n\n"
+        "👥 <b>المستخدمون</b>\n"
+        "───────────────────────\n"
+        f"📌 الإجمالي : <b>{total_users}</b>\n"
+        f"🟢 نشطون (اليوم) : <b>{active_today}</b>\n"
+        f"📅 نشطون (7 أيام) : <b>{active_7d}</b>\n"
+        f"🗓 نشطون (30 يوم) : <b>{active_30d}</b>\n\n"
+        "📥 <b>التحميلات</b>\n"
+        "───────────────────────\n"
+        f"🔢 إجمالي الطلبات : <b>{total_req}</b>\n"
+        f"✅ ناجحة : <b>{success_dl}</b>\n"
+        f"❌ فاشلة : <b>{failed_dl}</b>\n\n"
+        "🌍 <b>المنصات الأكثر طلباً</b>\n"
+        "───────────────────────\n"
+        + "\n".join(platform_lines) + "\n\n"
+        "⚡️ <b>الأداء</b>\n"
+        "───────────────────────\n"
+        f"✅ معدل النجاح : <b>{success_rate:.1f}%</b>\n\n"
+        f"⏰ <b>وقت التشغيل:</b> {days} يوم و {hours} ساعة و {minutes} دقيقة"
+    )
+
+    markup = InlineKeyboardMarkup([[InlineKeyboardButton("تحديث 🔄", callback_data="refresh_stats")]])
+    
+    if update.callback_query:
+        await update.callback_query.answer("تم تحديث الإحصائيات 🔄")
+        try:
+            await msg_or_query.edit_text(stats_msg, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
+    else:
+        await msg_or_query.reply_text(stats_msg, parse_mode="HTML", reply_markup=markup)
 
 SEARCH_CACHE = {}
 URL_CACHE = {}
@@ -349,6 +488,9 @@ def main():
     app.add_handler(CallbackQueryHandler(search_pagination_callback, pattern="^search_page_"))
     app.add_handler(CallbackQueryHandler(download_action_callback, pattern="^down_"))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
+
+    app.add_handler(MessageHandler(filters.Regex(r"^(احصائيات|إحصائيات|/stats)$"), show_stats_command))
+    app.add_handler(CallbackQueryHandler(show_stats_command, pattern="^refresh_stats$"))
 
     print("البوت يعمل واستقر بنجاح مع السيرفر الوهمي وتقليص المقاطع...")
     app.run_polling(drop_pending_updates=False)
