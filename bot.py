@@ -1,16 +1,6 @@
 import subprocess
 import sys
 import asyncio
-
-# تحديث تلقائي لمكتبة yt-dlp
-try:
-    print("🔄 جاري التحقق من تحديثات yt-dlp...")
-    subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], 
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("✅ yt-dlp محدث لأحدث إصدار!")
-except Exception as e:
-    print(f"⚠️ فشل التحديث التلقائي: {e}")
-
 import logging
 import os
 import uuid
@@ -23,6 +13,16 @@ from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 )
+
+# تحديث تلقائي لمكتبة yt-dlp
+try:
+    print("🔄 جاري التحقق من تحديثات yt-dlp...")
+    subprocess.run([sys.executable, "-m", "pip", "install", "--upgrade", "yt-dlp"], 
+                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    print("✅ yt-dlp محدث لأحدث إصدار!")
+except Exception as e:
+    print(f"⚠️ فشل التحديث التلقائي: {e}")
+
 from yt_dlp import YoutubeDL
 
 # ================== سيرفر الصحة لإرضاء المنصة ==================
@@ -30,7 +30,7 @@ class DummyHealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ZenoX Enterprise Bot is Running!")
+        self.wfile.write(b"ZenDown_Bot is Running!")
 
     def log_message(self, format, *args):
         return
@@ -44,11 +44,9 @@ threading.Thread(target=start_dummy_server, daemon=True).start()
 
 # ================== الإعدادات والتكوين ==================
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
-logger = logging.getLogger("ZenoXBot")
+logger = logging.getLogger("ZenDown_Bot")
 
-# ✅ السطر الجديد الآمن
 TOKEN = os.environ.get("BOT_TOKEN")
-
 CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
@@ -125,7 +123,7 @@ async def check_user_subscription(bot, user_id: int) -> bool:
     except Exception:
         return False
 
-# ================== لوحة الإحصائيات (تصميم الصورة بالضبط) ==================
+# ================== لوحة الإحصائيات ==================
 async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or user.id != ADMIN_ID: return
@@ -164,7 +162,6 @@ async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     hours = uptime.seconds // 3600
     minutes = (uptime.seconds // 60) % 60
 
-    # تنسيق قوائم المنصات بنفس ترتيب ونمط الصورة بالضبط
     sorted_platforms = sorted(stats["platforms"].items(), key=lambda x: x[1], reverse=True)
     platform_icons = {
         "يوتيوب": "▶️",
@@ -184,7 +181,7 @@ async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     platforms_str = "\n".join(platform_lines)
 
     stats_msg = (
-        "📊 <b>لوحة إحصائيات ZenoX Bot</b>\n"
+        "📊 <b>لوحة إحصائيات @ZenDown_Bot</b>\n"
         "━━━━━━━\n\n"
         "👥 <b>المستخدمون</b>\n"
         "───────────────\n"
@@ -225,6 +222,37 @@ async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
             pass
     else:
         await msg.reply_text(stats_msg, parse_mode="HTML", reply_markup=markup)
+
+# ================== الإذاعة (Broadcast) للمستخدمين ==================
+async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        return
+
+    text = update.message.text.replace("/broadcast", "").strip()
+    if not text:
+        await update.message.reply_text("الرجاء كتابة الرسالة بعد الأمر، مثال:\n/broadcast مرحباً بالجميع!")
+        return
+
+    users = list(stats["users"].keys())
+    if not users:
+        await update.message.reply_text("❌ لا يوجد مستخدمين مسجلين في قاعدة البيانات.")
+        return
+
+    msg = await update.message.reply_text(f"🚀 جاري إرسال الرسالة إلى {len(users)} مستخدم...\nيرجى الانتظار لتفادي حظر تيليجرام.")
+
+    success = 0
+    failed = 0
+
+    for uid in users:
+        try:
+            await context.bot.send_message(chat_id=int(uid), text=text)
+            success += 1
+            await asyncio.sleep(0.05) # تأخير بسيط لحماية البوت من حظر معدل الإرسال (Rate Limit)
+        except Exception:
+            failed += 1
+
+    await msg.edit_text(f"✅ تمت عملية الإذاعة بنجاح!\n\n- نجح الإرسال إلى: {success} مستخدم\n- فشل الإرسال إلى: {failed} مستخدم (قاموا بحظر البوت غالباً)")
 
 # ================== المعالجة الذكية والتنزيل القوي ==================
 def _blocking_extract_info(url):
@@ -268,7 +296,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🚧 عذراً، يجب الاشتراك بالقناة أولاً لاستخدام البوت.", reply_markup=markup)
         return
 
-    await update.message.reply_text(f"أهلاً بك <b>{user.first_name}</b> في محرك ZenoX الذكي! 🚀\nأرسل رابطاً للتحميل، أو اكتب نصاً للبحث المباشر.", parse_mode="HTML")
+    await update.message.reply_text(f"أهلاً بك <b>{user.first_name}</b> في محرك @ZenDown_Bot الذكي! 🚀\nأرسل رابطاً للتحميل، أو اكتب نصاً للبحث المباشر.", parse_mode="HTML")
 
 async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
@@ -299,14 +327,61 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await perform_youtube_search(update, context, text)
 
-# ================== البحث المباشر ==================
+# ================== البحث المباشر (المعدل كلياً ليطابق الصورة) ==================
+def format_duration(seconds):
+    if not seconds: return "0:00"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h > 0: return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
+
+def format_views(views):
+    if not views: return "غير معروف"
+    if views >= 1_000_000:
+        return f"{views/1_000_000:.1f}M".replace('.0M', 'M')
+    return str(views)
+
+def build_search_page(sid, page):
+    data = SEARCH_CACHE.get(sid)
+    if not data:
+        return "❌ انتهت صلاحية البحث، الرجاء البحث من جديد.", None
+    
+    entries = data['entries']
+    query = data['query']
+    total = len(entries)
+    
+    start_idx = page * 5
+    end_idx = start_idx + 5
+    page_entries = entries[start_idx:end_idx]
+    
+    lines = [f"🔍 نتائج بحث اليوتيوب لـ \"{query}\"\n"]
+    for entry in page_entries:
+        title = entry.get('title', 'بدون عنوان')
+        uploader = entry.get('uploader') or entry.get('channel', 'غير معروف')
+        duration = format_duration(entry.get('duration', 0))
+        views = format_views(entry.get('view_count'))
+        vid = entry.get('id', '')
+        
+        lines.append(f"🎬 {title}\n👤 {uploader}\n⏱ {duration} - 👁 {views}\n🔗 /dl_{vid}\n")
+    
+    text = "\n".join(lines)
+    
+    buttons = []
+    if end_idx < total:
+        buttons.append(InlineKeyboardButton("التالي »", callback_data=f"page_{sid}_{page+1}"))
+    if page > 0:
+        buttons.append(InlineKeyboardButton("« السابق", callback_data=f"page_{sid}_{page-1}"))
+        
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+    return text, markup
+
 async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
     msg = await update.message.reply_text(f"🔍 جاري البحث الذكي عن: <b>{query}</b>...", parse_mode="HTML")
     
     def _search():
-        opts = {'extract_flat': True, 'quiet': True, 'default_search': 'ytsearch10'}
+        opts = {'extract_flat': True, 'quiet': True, 'default_search': 'ytsearch20'}
         with YoutubeDL(opts) as ydl:
-            return ydl.extract_info(f"ytsearch10:{query}", download=False).get('entries', [])
+            return ydl.extract_info(f"ytsearch20:{query}", download=False).get('entries', [])
 
     try:
         entries = await asyncio.to_thread(_search)
@@ -318,11 +393,26 @@ async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_T
         await msg.edit_text("❌ لم يتم العثور على نتائج.")
         return
 
-    lines = [f"🔍 <b>نتائج البحث لـ: {query}</b>\n"]
-    for entry in entries[:5]:
-        lines.append(f"🎬 <b>{entry.get('title')}</b>\n🔗 /dl_{entry.get('id')}\n")
+    sid = str(uuid.uuid4())[:8]
+    SEARCH_CACHE[sid] = {'query': query, 'entries': entries}
     
-    await msg.edit_text("\n".join(lines), parse_mode="HTML")
+    text, markup = build_search_page(sid, 0)
+    await msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
+
+async def search_page_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    
+    parts = q.data.split("_")
+    sid = parts[1]
+    page = int(parts[2])
+    
+    text, markup = build_search_page(sid, page)
+    if "انتهت صلاحية" in text:
+        await q.message.edit_text(text)
+        return
+        
+    await q.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
 
 # ================== جلب معلومات الرابط ==================
 async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
@@ -380,7 +470,7 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
     
     async with DOWNLOAD_SEMAPHORE:
         await status_msg.edit_text("🚀 جاري التحميل والمعالجة السريعة...")
-        out_tmpl = f"zenox_{sid}.%(ext)s"
+        out_tmpl = f"zendown_{sid}.%(ext)s"
         
         # خيارات تنزيل مخصصة وعامة لتفادي القيود والحظر للمقاطع المخصصة والمحمية
         if action == "vid":
@@ -429,9 +519,9 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
 
                 await status_msg.edit_text("📤 جاري إرسال الملف...")
                 with open(file_path, 'rb') as f:
-                    if action == "vid": await q.message.reply_video(video=f, caption="🎬 تم بواسطة ZenoX Bot", supports_streaming=True)
-                    elif action == "aud": await q.message.reply_audio(audio=f, caption="🎵 تم بواسطة ZenoX Bot")
-                    elif action == "voc": await q.message.reply_voice(voice=f, caption="🎙 تم بواسطة ZenoX Bot")
+                    if action == "vid": await q.message.reply_video(video=f, caption="🎬 تم بواسطة @ZenDown_Bot", supports_streaming=True)
+                    elif action == "aud": await q.message.reply_audio(audio=f, caption="🎵 تم بواسطة @ZenDown_Bot")
+                    elif action == "voc": await q.message.reply_voice(voice=f, caption="🎙 تم بواسطة @ZenDown_Bot")
 
                 track_download_status(True)
                 await status_msg.delete()
@@ -452,7 +542,10 @@ def main():
     app = ApplicationBuilder().token(TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("broadcast", broadcast_command))  # إضافة أمر الإذاعة
+    
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
+    app.add_handler(CallbackQueryHandler(search_page_callback, pattern="^page_")) # زر التقليب
     
     app.add_handler(CommandHandler("stats", show_stats_command))
     app.add_handler(MessageHandler(filters.Regex(r"^(احصائيات|إحصائيات)$"), show_stats_command))
@@ -462,11 +555,12 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/dl_"), handle_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🚀 تم تشغيل محرك ZenoX بنجاح المطور للوحة الإحصائيات!")
+    print("🚀 تم تشغيل محرك @ZenDown_Bot بنجاح المطور للوحة الإحصائيات!")
     app.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
+
 
 
 
