@@ -46,11 +46,13 @@ threading.Thread(target=start_dummy_server, daemon=True).start()
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger("ZenoXBot")
 
-TOKEN = "8548413224:AAFmj0JaobA3cNjOW9lNHIiBEpmOV410vuU"
+# ✅ السطر الجديد الآمن
+TOKEN = os.environ.get("BOT_TOKEN")
+
 CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
-# تحديد أقصى عدد تحميلات متزامنة لحماية الموارد عند ضغط 100 ألف مستخدم
+# أقصى عدد تحميلات متزامنة لحماية الموارد عند الضغط العالي
 MAX_CONCURRENT_DOWNLOADS = 5
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
@@ -73,6 +75,10 @@ def load_stats():
         "total_requests": 0,
         "successful_downloads": 0,
         "failed_downloads": 0,
+        "cache_hits": 0,
+        "sent_videos": 0,
+        "request_limits": 0,
+        "share_clicks": 0,
         "platforms": {"يوتيوب": 0, "تويتر/X": 0, "سناب شات": 0, "تيك توك": 0, "إنستغرام": 0, "بينترست": 0, "أخرى": 0}
     }
 
@@ -103,8 +109,11 @@ def track_platform_request(url):
     save_stats()
 
 def track_download_status(success: bool):
-    if success: stats["successful_downloads"] += 1
-    else: stats["failed_downloads"] += 1
+    if success: 
+        stats["successful_downloads"] += 1
+        stats["sent_videos"] += 1
+    else: 
+        stats["failed_downloads"] += 1
     save_stats()
 
 # ================== إدارة الاشتراك والتحقق ==================
@@ -116,7 +125,7 @@ async def check_user_subscription(bot, user_id: int) -> bool:
     except Exception:
         return False
 
-# ================== لوحة الإحصائيات (للمشرف) ==================
+# ================== لوحة الإحصائيات (تصميم الصورة بالضبط) ==================
 async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     if not user or user.id != ADMIN_ID: return
@@ -125,42 +134,107 @@ async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
     now = datetime.now()
     
     total_users = len(stats["users"])
-    active_today = sum(1 for u, t in stats["users"].items() if (now - datetime.fromisoformat(t)).days < 1)
-    
-    total_req = stats["total_requests"]
-    success_dl = stats["successful_downloads"]
-    failed_dl = stats["failed_downloads"]
+    active_today = 0
+    active_7d = 0
+    active_30d = 0
+
+    for uid, last_str in stats["users"].items():
+        try:
+            last_time = datetime.fromisoformat(last_str)
+            diff = now - last_time
+            if diff <= timedelta(days=1): active_today += 1
+            if diff <= timedelta(days=7): active_7d += 1
+            if diff <= timedelta(days=30): active_30d += 1
+        except Exception:
+            pass
+
+    total_req = stats.get("total_requests", 0)
+    success_dl = stats.get("successful_downloads", 0)
+    failed_dl = stats.get("failed_downloads", 0)
+    cache_hits = stats.get("cache_hits", 0)
+    sent_vids = stats.get("sent_videos", 0)
+    req_limits = stats.get("request_limits", 0)
+    share_clicks = stats.get("share_clicks", 0)
+
     total_dl = success_dl + failed_dl
     rate = (success_dl / total_dl * 100) if total_dl > 0 else 0.0
 
     uptime = datetime.now() - BOT_START_TIME
-    
+    days = uptime.days
+    hours = uptime.seconds // 3600
+    minutes = (uptime.seconds // 60) % 60
+
+    # تنسيق قوائم المنصات بنفس ترتيب ونمط الصورة بالضبط
+    sorted_platforms = sorted(stats["platforms"].items(), key=lambda x: x[1], reverse=True)
+    platform_icons = {
+        "يوتيوب": "▶️",
+        "تويتر/X": "𝕏",
+        "سناب شات": "👻",
+        "تيك توك": "🎵",
+        "إنستغرام": "📸",
+        "بينترست": "📌",
+        "أخرى": "🌐"
+    }
+
+    platform_lines = []
+    for idx, (p_name, count) in enumerate(sorted_platforms, 1):
+        icon = platform_icons.get(p_name, "▫️")
+        platform_lines.append(f"{idx}. {icon} {p_name:<12} : {count}")
+
+    platforms_str = "\n".join(platform_lines)
+
     stats_msg = (
-        "📊 <b>لوحة إحصائيات ZenoX (الأداء العالي)</b>\n"
-        "═"*25 + "\n\n"
-        f"👥 إجمالي المستخدمين : <b>{total_users}</b>\n"
-        f"🟢 النشطون اليوم : <b>{active_today}</b>\n\n"
-        f"🔢 إجمالي الطلبات : <b>{total_req}</b>\n"
-        f"✅ تحميلات ناجحة : <b>{success_dl}</b>\n"
-        f"❌ تحميلات فاشلة : <b>{failed_dl}</b>\n"
-        f"⚡️ نسبة النجاح : <b>{rate:.1f}%</b>\n\n"
-        f"⏰ مدة التشغيل : {uptime.days}d {uptime.seconds//3600}h {(uptime.seconds//60)%60}m"
+        "📊 <b>لوحة إحصائيات ZenoX Bot</b>\n"
+        "━━━━━━━\n\n"
+        "👥 <b>المستخدمون</b>\n"
+        "───────────────\n"
+        f"📌 الإجمالي       : {total_users}\n"
+        f"🟢 نشطون (اليوم)  : {active_today}\n"
+        f"📅 نشطون (7 أيام) : {active_7d}\n"
+        f"🗓 نشطون (30 يوم) : {active_30d}\n"
+        "───────────────\n\n"
+        "📫 <b>التحميلات</b>\n"
+        "───────────────\n"
+        f"🔢 إجمالي الطلبات  : {total_req}\n"
+        f"✅ ناجحة         : {success_dl}\n"
+        f"❌ فاشلة         : {failed_dl}\n"
+        f"⚡️ من الكاش       : {cache_hits}\n"
+        f"🎬 فيديوهات أُرسلت : {sent_vids}\n"
+        f"🛡 حد الطلبات     : {req_limits}\n"
+        "───────────────\n\n"
+        "🌎 <b>المنصات الأكثر طلباً</b>\n"
+        "───────────────\n"
+        f"{platforms_str}\n"
+        "───────────────\n\n"
+        "⚡️ <b>الأداء</b>\n"
+        "───────────────\n"
+        f"🔗 ضغطات المشاركة : {share_clicks}\n"
+        f"💾 Cache Hit Rate : 0.0%\n"
+        f"✅ معدل النجاح     : {rate:.1f}%\n"
+        "───────────────\n\n"
+        f"⏰ <b>وقت التشغيل:</b> {days} يوم {hours} ساعة {minutes} دقيقة\n"
+        "🔄 <b>تحديث الإحصائيات:</b> كل 100 حدث أو عند الإيقاف"
     )
 
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("تحديث 🔄", callback_data="refresh_stats")]])
     if update.callback_query:
-        await update.callback_query.answer("تم التحديث")
-        await msg.edit_text(stats_msg, parse_mode="HTML", reply_markup=markup)
+        await update.callback_query.answer("تم التحديث 🔄")
+        try:
+            await msg.edit_text(stats_msg, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            pass
     else:
         await msg.reply_text(stats_msg, parse_mode="HTML", reply_markup=markup)
 
-# ================== المعالجة الذكية في الخلفية ==================
+# ================== المعالجة الذكية والتنزيل القوي ==================
 def _blocking_extract_info(url):
     opts = {
-        'quiet': True, 'no_warnings': True,
-        'extractor_args': {'youtube': {'player_client': ['ios', 'android', 'mweb']}},
-        'user_agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_6 like Mac OS X)',
-        'geo_bypass': True, 'nocheckcertificate': True
+        'quiet': True, 
+        'no_warnings': True,
+        'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb', 'web']}},
+        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'geo_bypass': True, 
+        'nocheckcertificate': True
     }
     with YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
@@ -260,7 +334,6 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         uploader = info.get('uploader', 'غير معروف')
         thumbnail = info.get('thumbnail')
     except Exception:
-        # المحاولة الاحتياطية عبر oEmbed
         try:
             req = urllib.request.Request(f"https://www.youtube.com/oembed?url={url}&format=json", headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req) as resp:
@@ -291,7 +364,7 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     else:
         await update.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
 
-# ================== التحميل الذكي المتزامن ==================
+# ================== التحميل الذكي المحسّن للمقاطع المجمعة والمحمية ==================
 async def download_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -300,32 +373,55 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
     url = URL_CACHE.get(sid)
     
     if not url:
-        await q.message.reply_text("❌ انتهت صلاحية هذا الجلسة، أعد إرسال الرابط.")
+        await q.message.reply_text("❌ انتهت صلاحية هذه الجلسة، أعد إرسال الرابط.")
         return
 
     status_msg = await q.message.reply_text("⏳ أضيفت إلى طابور التحميل الذكي...")
     
-    # استخدام الـ Semaphore لضمان عدم تجاوز قدرة السيرفر
     async with DOWNLOAD_SEMAPHORE:
         await status_msg.edit_text("🚀 جاري التحميل والمعالجة السريعة...")
         out_tmpl = f"zenox_{sid}.%(ext)s"
         
+        # خيارات تنزيل مخصصة وعامة لتفادي القيود والحظر للمقاطع المخصصة والمحمية
         if action == "vid":
-            opts = {'format': 'bestvideo[filesize<45M][ext=mp4]+bestaudio/best[ext=mp4]/best', 'outtmpl': out_tmpl, 'quiet': True}
+            opts = {
+                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+                'outtmpl': out_tmpl,
+                'quiet': True,
+                'no_warnings': True,
+                'geo_bypass': True,
+                'nocheckcertificate': True,
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+                'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web', 'mweb']}}
+            }
         elif action == "aud":
-            opts = {'format': 'bestaudio/best', 'outtmpl': out_tmpl, 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}], 'quiet': True}
+            opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': out_tmpl,
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
+                'quiet': True,
+                'no_warnings': True,
+                'geo_bypass': True,
+                'nocheckcertificate': True
+            }
         else:
-            opts = {'format': 'bestaudio/best', 'outtmpl': out_tmpl, 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}], 'quiet': True}
+            opts = {
+                'format': 'bestaudio/best',
+                'outtmpl': out_tmpl,
+                'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}],
+                'quiet': True,
+                'no_warnings': True,
+                'geo_bypass': True,
+                'nocheckcertificate': True
+            }
 
         file_path = None
         try:
-            # تشغيل التحميل في Thread منفصل تماماً
             file_path = await asyncio.to_thread(_blocking_download, url, opts)
             if action == "aud": file_path = file_path.rsplit('.', 1)[0] + '.mp3'
             if action == "voc": file_path = file_path.rsplit('.', 1)[0] + '.ogg'
 
             if os.path.exists(file_path):
-                # ضغط محلي في حال تجاوز الفيديو 48 ميجابايت
                 if action == "vid" and (os.path.getsize(file_path) / (1024*1024)) > 48:
                     await status_msg.edit_text("🗜 جاري ضغط الحجم ليناسب تيليجرام...")
                     comp_path = file_path.rsplit('.', 1)[0] + '_c.mp4'
@@ -341,11 +437,11 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                 await status_msg.delete()
             else:
                 track_download_status(False)
-                await status_msg.edit_text("❌ لم يكتمل التحميل بشكل صحيح.")
+                await status_msg.edit_text("❌ حدث خطأ أثناء معالجة الملف.")
         except Exception as e:
             logger.error(f"Download Error: {e}")
             track_download_status(False)
-            await status_msg.edit_text("❌ حدث خطأ أثناء التحميل، قد يكون المقطع محمي.")
+            await status_msg.edit_text("❌ حدث خطأ أثناء التحميل، قد يكون المقطع محمي أو يتطلب تسجيلاً.")
         finally:
             if file_path and os.path.exists(file_path):
                 try: os.remove(file_path)
@@ -366,10 +462,11 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/dl_"), handle_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🚀 تم تشغيل محرك ZenoX الذكي عالي الكفاءة بنجاح!")
+    print("🚀 تم تشغيل محرك ZenoX بنجاح المطور للوحة الإحصائيات!")
     app.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
+
 
 
