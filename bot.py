@@ -7,6 +7,7 @@ import uuid
 import threading
 import json
 import urllib.request
+import time
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -25,7 +26,7 @@ except Exception as e:
 
 from yt_dlp import YoutubeDL
 
-# ================== سيرفر الصحة لإرضاء المنصة ==================
+# ================== سيرفر الصحة لإرضاء المنصة (Render/UptimeRobot) ==================
 class DummyHealthCheckHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -258,15 +259,20 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await msg.edit_text(f"✅ تمت عملية الإذاعة بنجاح!\n\n- نجح الإرسال إلى: {success} مستخدم\n- فشل الإرسال إلى: {failed} مستخدم (قاموا بحظر البوت غالباً)")
 
-# ================== المعالجة الذكية والتنزيل القوي ==================
+# ================== المعالجة الذكية والتنزيل القوي (المعدلة) ==================
 def _blocking_extract_info(url):
+    # استخدام إعدادات ذكية لتخطي حماية يوتيوب وتويتر
     opts = {
         'quiet': True, 
         'no_warnings': True,
-        'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'mweb', 'web']}},
+        'extractor_args': {
+            'youtube': {'player_client': ['android', 'ios', 'mweb', 'web']},
+            'twitter': {'api': ['syndication']} # حل مشكلة تويتر
+        },
         'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'geo_bypass': True, 
-        'nocheckcertificate': True
+        'nocheckcertificate': True,
+        'socket_timeout': 15 # منع التعليق الطويل
     }
     with YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
@@ -277,7 +283,16 @@ def _blocking_download(url, opts):
         return ydl.prepare_filename(info)
 
 def _compress_video_sync(input_file, output_file):
-    cmd = ['ffmpeg', '-y', '-i', input_file, '-c:v', 'libx264', '-crf', '28', '-preset', 'fast', '-c:a', 'aac', '-b:a', '128k', output_file]
+    # ضغط ذكي جداً وقاسي: تصغير الأبعاد إلى 720p كحد أقصى، تقليل الجودة بشكل ملحوظ ليتسع في تيليجرام
+    cmd = [
+        'ffmpeg', '-y', '-i', input_file, 
+        '-c:v', 'libx264', 
+        '-crf', '32', # رقم عالي يعني ضغط أقوى بكثير
+        '-preset', 'faster', 
+        '-vf', "scale='min(720,iw)':-2", # الحفاظ على الأبعاد مع تصغير الدقة للتقليل المرعب للحجم
+        '-c:a', 'aac', '-b:a', '64k', # ضغط الصوت
+        output_file
+    ]
     try:
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
@@ -331,7 +346,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await perform_youtube_search(update, context, text)
 
-# ================== البحث المباشر (المعدل كلياً ليطابق الصورة) ==================
+# ================== البحث المباشر ==================
 def format_duration(seconds):
     if not seconds: return "0:00"
     m, s = divmod(int(seconds), 60)
@@ -418,16 +433,22 @@ async def search_page_callback(update: Update, context: ContextTypes.DEFAULT_TYP
         
     await q.message.edit_text(text, parse_mode="HTML", reply_markup=markup)
 
-# ================== جلب معلومات الرابط ==================
+# ================== جلب معلومات الرابط (المعدلة والمحصنة) ==================
 async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, url: str):
     msg = await update.message.reply_text("⚡️ جاري تحليل الرابط...")
     
+    title = None
+    uploader = 'غير معروف'
+    thumbnail = None
+
     try:
         info = await asyncio.to_thread(_blocking_extract_info, url)
         title = info.get('title')
         uploader = info.get('uploader', 'غير معروف')
         thumbnail = info.get('thumbnail')
-    except Exception:
+    except Exception as e:
+        logger.warning(f"Error fetching metadata via ytdl: {e}")
+        # محاولة أخيرة عبر الـ oembed
         try:
             req = urllib.request.Request(f"https://www.youtube.com/oembed?url={url}&format=json", headers={'User-Agent': 'Mozilla/5.0'})
             with urllib.request.urlopen(req) as resp:
@@ -436,11 +457,12 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                 uploader = data.get('author_name', 'غير معروف')
                 thumbnail = data.get('thumbnail_url')
         except Exception:
-            title = None
+            pass
 
+    # إذا فشل كل شيء في التحليل (مثل مقاطع تويتر)، لن نرفض الرابط! سنعطيه عنوان افتراضي ليتمكن من التحميل
     if not title:
-        await msg.edit_text("❌ يتعذر تحليل هذا الرابط حالياً.")
-        return
+        title = "مقطع وسائط (جاهز للتحميل)"
+        uploader = "الرابط المرفق"
 
     sid = str(uuid.uuid4())[:8]
     URL_CACHE[sid] = url
@@ -454,11 +476,14 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     await msg.delete()
     if thumbnail:
-        await update.message.reply_photo(photo=thumbnail, caption=caption, parse_mode="HTML", reply_markup=markup)
+        try:
+            await update.message.reply_photo(photo=thumbnail, caption=caption, parse_mode="HTML", reply_markup=markup)
+        except Exception:
+            await update.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
     else:
         await update.message.reply_text(caption, parse_mode="HTML", reply_markup=markup)
 
-# ================== التحميل الذكي المحسّن للمقاطع المجمعة والمحمية ==================
+# ================== التحميل الذكي المحسّن (نظام التكرار والمحاولات) ==================
 async def download_action_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
     await q.answer()
@@ -476,7 +501,7 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
         await status_msg.edit_text("🚀 جاري التحميل والمعالجة السريعة...")
         out_tmpl = f"zendown_{sid}.%(ext)s"
         
-        # خيارات تنزيل مخصصة وعامة لتفادي القيود والحظر للمقاطع المخصصة والمحمية
+        # خيارات تنزيل مخصصة لتفادي الحظر
         if action == "vid":
             opts = {
                 'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
@@ -485,8 +510,11 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                 'no_warnings': True,
                 'geo_bypass': True,
                 'nocheckcertificate': True,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-                'extractor_args': {'youtube': {'player_client': ['android', 'ios', 'web', 'mweb']}}
+                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                'extractor_args': {
+                    'youtube': {'player_client': ['android', 'ios', 'web']},
+                    'twitter': {'api': ['syndication']}
+                }
             }
         elif action == "aud":
             opts = {
@@ -510,14 +538,31 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
             }
 
         file_path = None
-        try:
-            file_path = await asyncio.to_thread(_blocking_download, url, opts)
-            if action == "aud": file_path = file_path.rsplit('.', 1)[0] + '.mp3'
-            if action == "voc": file_path = file_path.rsplit('.', 1)[0] + '.ogg'
+        max_retries = 3 # نظام محاولات جديد: يجرب 3 مرات قبل أن يستسلم
+        success_download = False
 
-            if os.path.exists(file_path):
-                if action == "vid" and (os.path.getsize(file_path) / (1024*1024)) > 48:
-                    await status_msg.edit_text("🗜 جاري ضغط الحجم ليناسب تيليجرام...")
+        for attempt in range(max_retries):
+            try:
+                file_path = await asyncio.to_thread(_blocking_download, url, opts)
+                if action == "aud": file_path = file_path.rsplit('.', 1)[0] + '.mp3'
+                if action == "voc": file_path = file_path.rsplit('.', 1)[0] + '.ogg'
+                
+                if os.path.exists(file_path):
+                    success_download = True
+                    break # نجح التحميل، نخرج من دائرة التكرار
+            except Exception as e:
+                logger.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    await status_msg.edit_text(f"⚠️ جاري المحاولة مرة أخرى ({attempt + 2}/{max_retries})...")
+                    await asyncio.sleep(2) # انتظار ثانيتين قبل المحاولة القادمة لتفادي الحظر المؤقت
+                else:
+                    pass
+
+        try:
+            if success_download and file_path and os.path.exists(file_path):
+                # إذا كان الفيديو أكبر من 45 ميجا نقوم بضغطه بقوة ليتسع في تيليجرام
+                if action == "vid" and (os.path.getsize(file_path) / (1024*1024)) > 45:
+                    await status_msg.edit_text("🗜 حجم المقطع كبير.. جاري الضغط القوي ليناسب تيليجرام...")
                     comp_path = file_path.rsplit('.', 1)[0] + '_c.mp4'
                     file_path = await asyncio.to_thread(_compress_video_sync, file_path, comp_path)
 
@@ -531,11 +576,11 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                 await status_msg.delete()
             else:
                 track_download_status(False)
-                await status_msg.edit_text("❌ حدث خطأ أثناء معالجة الملف.")
+                await status_msg.edit_text("❌ حدث خطأ أثناء التحميل، قد يكون المقطع محمي كلياً أو يحتاج تسجيلاً إجبارياً.")
         except Exception as e:
-            logger.error(f"Download Error: {e}")
+            logger.error(f"Send Error: {e}")
             track_download_status(False)
-            await status_msg.edit_text("❌ حدث خطأ أثناء التحميل، قد يكون المقطع محمي أو يتطلب تسجيلاً.")
+            await status_msg.edit_text("❌ حدث خطأ أثناء معالجة وإرسال الملف.")
         finally:
             if file_path and os.path.exists(file_path):
                 try: os.remove(file_path)
@@ -546,10 +591,10 @@ def main():
     app = ApplicationBuilder().token(TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("broadcast", broadcast_command))  # إضافة أمر الإذاعة
+    app.add_handler(CommandHandler("broadcast", broadcast_command))
     
     app.add_handler(CallbackQueryHandler(check_sub_callback, pattern="^check_sub$"))
-    app.add_handler(CallbackQueryHandler(search_page_callback, pattern="^page_")) # زر التقليب
+    app.add_handler(CallbackQueryHandler(search_page_callback, pattern="^page_")) 
     
     app.add_handler(CommandHandler("stats", show_stats_command))
     app.add_handler(MessageHandler(filters.Regex(r"^(احصائيات|إحصائيات)$"), show_stats_command))
@@ -559,11 +604,12 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/dl_"), handle_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
-    print("🚀 تم تشغيل محرك @ZenDown_Bot بنجاح المطور للوحة الإحصائيات!")
+    print("🚀 تم تشغيل محرك @ZenDown_Bot بنجاح المطور للوحة الإحصائيات والتخطي الذكي!")
     app.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
+
 
 
 
