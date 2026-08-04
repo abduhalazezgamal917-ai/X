@@ -56,7 +56,7 @@ CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
 # أقصى عدد تحميلات متزامنة لحماية الموارد
-MAX_CONCURRENT_DOWNLOADS = 1 # تم تقليله لـ 3 لضمان استقرار السيرفر المجاني
+MAX_CONCURRENT_DOWNLOADS = 1 # تم تقليله لـ 1 لضمان استقرار السيرفر المجاني
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # ذاكرة مؤقتة
