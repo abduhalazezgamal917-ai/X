@@ -55,39 +55,24 @@ TOKEN = os.environ.get("BOT_TOKEN")
 CHANNEL = "@ZenoX_Tools"
 ADMIN_ID = 6043858925
 
-# معرف القناة الخاصة لحفظ البيانات (تمت الإضافة لحماية بيانات المستخدمين عند إعادة التشغيل)
-BACKUP_CHANNEL_ID = -1004309387383
-_global_bot_instance = None
-
-# أقصى عدد تحميلات متزامنة لحماية الموارد على الخطة المجانية
-MAX_CONCURRENT_DOWNLOADS = 1 
+# أقصى عدد تحميلات متزامنة لحماية الموارد
+MAX_CONCURRENT_DOWNLOADS = 1 # تم تقليله لـ 3 لضمان استقرار السيرفر المجاني
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
 # ذاكرة مؤقتة
 SEARCH_CACHE = {}
 URL_CACHE = {}
 
-# ================== نظام الإحصائيات والحفظ السحابي التلقائي ==================
+# ================== نظام الإحصائيات ==================
 STATS_FILE = "stats.json"
 
 def load_stats():
-    # محاولة استرجاع أحدث نسخة من قناة التيليجرام الاحتياطية إن وجدت
-    try:
-        if _global_bot_instance and BACKUP_CHANNEL_ID:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                # سيتم جلبها في الدالة عند بدء التشغيل أو إنشاء ملف افتراضي
-                pass
-    except Exception:
-        pass
-
     if os.path.exists(STATS_FILE):
         try:
             with open(STATS_FILE, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             pass
-            
     return {
         "users": {},
         "total_requests": 0,
@@ -107,42 +92,8 @@ def save_stats():
     try:
         with open(STATS_FILE, "w", encoding="utf-8") as f:
             json.dump(stats, f, ensure_ascii=False, indent=2)
-            
-        # رفع نسخة احتياطية صامتة إلى قناة البيانات الخاصة بك تلقائياً
-        if _global_bot_instance and BACKUP_CHANNEL_ID:
-            asyncio.create_task(upload_stats_to_channel())
     except Exception:
         pass
-
-async def upload_stats_to_channel():
-    try:
-        if os.path.exists(STATS_FILE):
-            with open(STATS_FILE, 'rb') as f:
-                await _global_bot_instance.send_document(
-                    chat_id=BACKUP_CHANNEL_ID,
-                    document=f,
-                    caption="🔄 نسخة احتياطية تلقائية لقاعدة بيانات الإحصائيات والمستخدمين."
-                )
-    except Exception:
-        pass
-
-async def restore_stats_from_channel(bot):
-    global stats
-    global _global_bot_instance
-    _global_bot_instance = bot
-    
-    try:
-        async for message in bot.get_chat_history(chat_id=BACKUP_CHANNEL_ID, limit=5):
-            if message.document and message.document.file_name == STATS_FILE:
-                file = await message.document.get_file()
-                await file.download_to_drive(STATS_FILE)
-                if os.path.exists(STATS_FILE):
-                    with open(STATS_FILE, "r", encoding="utf-8") as f:
-                        stats = json.load(f)
-                    logger.info("✅ تم استرجاع قاعدة بيانات المستخدمين والإحصائيات بنجاح من القناة الخاصة!")
-                    break
-    except Exception as e:
-        logger.warning(f"⚠️ لم يتم العثور على نسخة سابقة في القناة أو تعذر الاسترجاع: {e}")
 
 def track_user_activity(user_id):
     stats["users"][str(user_id)] = datetime.now().isoformat()
@@ -264,7 +215,7 @@ async def show_stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"✅ معدل النجاح     : {rate:.1f}%\n"
         "───────────────\n\n"
         f"⏰ <b>وقت التشغيل:</b> {days} يوم {hours} ساعة {minutes} دقيقة\n"
-        "🔄 <b>الحفظ السحابي:</b> مفعل تلقائياً عبر القناة الخاصة"
+        "🔄 <b>تحديث الإحصائيات:</b> كل 100 حدث أو عند الإيقاف"
     )
 
     markup = InlineKeyboardMarkup([[InlineKeyboardButton("تحديث 🔄", callback_data="refresh_stats")]])
@@ -331,25 +282,27 @@ def _blocking_download(url, opts):
         return ydl.prepare_filename(info)
 
 def _compress_video_sync(input_file, output_file):
+    # خوارزمية ضغط مُصممة خصيصاً للسيرفرات الضعيفة لمنع التعليق
     cmd = [
         'ffmpeg', '-y', '-i', input_file, 
         '-c:v', 'libx264', 
-        '-preset', 'ultrafast', 
-        '-threads', '1', 
-        '-crf', '35', 
-        '-vf', "scale='min(480,iw)':-2", 
-        '-r', '24', 
+        '-preset', 'ultrafast',   # أسرع وضع لعدم خنق المعالج (كان faster وهذا ما سبب التعليق)
+        '-threads', '1',          # إجبار الخادم على مسار واحد لمنع انهيار الرام
+        '-crf', '35',             # ضغط قاسي لتقليل الحجم
+        '-vf', "scale='min(480,iw)':-2", # تصغير إلى 480p لسرعة المعالجة
+        '-r', '24',               # تقليل الإطارات لتخفيف العبء
         '-c:a', 'aac', '-b:a', '64k',
         output_file
     ]
     try:
+        # مهلة 3 دقائق، لو تأخر أكثر سيتم قتله ليتحرر البوت بدلاً من التعليق الأبدي
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=180)
         if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
             return output_file
     except subprocess.TimeoutExpired:
-        pass 
+        pass # تم تجاوز الوقت المحدد
     except Exception:
-        pass 
+        pass # حدث خطأ أو FFMPEG غير مثبت
     return input_file
 
 # ================== استقبال الرسائل والبدء ==================
@@ -614,12 +567,12 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                     comp_path = file_path.rsplit('.', 1)[0] + '_c.mp4'
                     file_path = await asyncio.to_thread(_compress_video_sync, file_path, comp_path)
 
-                # جدار حماية تيليجرام
+                # جدار حماية تيليجرام: فحص الحجم النهائي لمنع التعليق الوهمي أثناء الرفع
                 final_size_mb = os.path.getsize(file_path) / (1024 * 1024)
                 if final_size_mb >= 49.5:
                     await status_msg.edit_text(f"❌ عذراً، المقطع كبير جداً ({final_size_mb:.1f} ميجا). الحد الأقصى للبوتات هو 50 ميجا.")
                     track_download_status(False)
-                    return 
+                    return # نخرج من العملية فوراً
 
                 await status_msg.edit_text("📤 جاري إرسال الملف...")
                 with open(file_path, 'rb') as f:
@@ -641,15 +594,9 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                 try: os.remove(file_path)
                 except Exception: pass
 
-# ================== وظيفة الاستعداد واستعادة الداتا ==================
-async def post_init(application):
-    print("🔄 جاري الاتصال واستعادة قاعدة البيانات من القناة الخاصة...")
-    await restore_stats_from_channel(application.bot)
-    print("🚀 تم تشغيل محرك @ZenDown_Bot بنجاح! مزود بنظام الحفظ السحابي وحماية ريندر.")
-
 # ================== التشغيل الرئيسي ==================
 def main():
-    app = ApplicationBuilder().token(TOKEN).concurrent_updates(True).post_init(post_init).build()
+    app = ApplicationBuilder().token(TOKEN).concurrent_updates(True).build()
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
@@ -665,10 +612,8 @@ def main():
     app.add_handler(MessageHandler(filters.Regex(r"^/dl_"), handle_message))
     app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), handle_message))
 
+    print("🚀 تم تشغيل محرك @ZenDown_Bot بنجاح! مزود بحماية الـ OOM والجدار الأمني لتيليجرام.")
     app.run_polling(drop_pending_updates=False)
 
 if __name__ == "__main__":
     main()
-
-
-
