@@ -8,6 +8,7 @@ import threading
 import json
 import urllib.request
 import time
+import random
 from datetime import datetime, timedelta
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
@@ -260,19 +261,59 @@ async def broadcast_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.edit_text(f"✅ تمت عملية الإذاعة بنجاح!\n\n- نجح الإرسال إلى: {success} مستخدم\n- فشل الإرسال إلى: {failed} مستخدم (قاموا بحظر البوت غالباً)")
 
 # ================== المعالجة والضغط الفائق السرعة ==================
-def _blocking_extract_info(url):
-    opts = {
-        'quiet': True, 
+
+# مجموعة User-Agents حديثة يتم التبديل بينها عشوائياً لتقليل احتمال الحظر من المنصات
+USER_AGENTS = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15',
+    'Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1',
+    'Mozilla/5.0 (Linux; Android 14; SM-S911B) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Mobile Safari/537.36',
+]
+
+# رسائل أخطاء تدل على أن الفيديو محمي/محذوف/خاص بشكل نهائي، لا فائدة من إعادة المحاولة معها
+NON_RETRYABLE_MARKERS = [
+    "private video", "private account", "this video is unavailable", "video unavailable",
+    "sign in to confirm your age", "account has been terminated", "video has been removed",
+    "requires payment", "this content isn't available", "content isn't available",
+    "login required", "who has restricted", "unable to find video", "no video formats found",
+    "unsupported url", "copyright", "not available in your country",
+]
+
+def _get_common_ydl_opts():
+    """خيارات مشتركة تُستخدم في كل عمليات yt-dlp لتقليل نسبة الفشل والحظر."""
+    return {
+        'quiet': True,
         'no_warnings': True,
-        'extractor_args': {
-            'youtube': {'player_client': ['android', 'ios', 'mweb', 'web']},
-            'twitter': {'api': ['syndication']}
-        },
-        'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
-        'geo_bypass': True, 
+        'geo_bypass': True,
         'nocheckcertificate': True,
-        'socket_timeout': 15 
+        'noplaylist': True,
+        'check_formats': False,
+        'socket_timeout': 20,
+        'retries': 5,
+        'fragment_retries': 5,
+        'extractor_retries': 3,
+        'concurrent_fragment_downloads': 1,
+        'user_agent': random.choice(USER_AGENTS),
+        'http_headers': {
+            'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
+            'Referer': 'https://www.google.com/',
+        },
+        'extractor_args': {
+            # ترتيب عملاء يوتيوب يقلل من ظهور رسالة "Sign in to confirm you're not a bot"
+            # ملاحظة: بعض المقاطع أصبحت يوتيوب تفرض عليها تسجيل دخول إجباري من جهتها
+            # ولا يوجد حل 100% بدون كوكيز لتلك الحالات تحديداً مهما كانت الإعدادات.
+            'youtube': {
+                'player_client': ['android', 'ios', 'tv_embedded', 'web_safari'],
+                'player_skip': ['webpage', 'configs'],
+            },
+            'twitter': {'api': ['syndication']},
+            'tiktok': {'app_info': ['7355728856979712262']},
+        },
     }
+
+def _blocking_extract_info(url):
+    opts = _get_common_ydl_opts()
+    opts['socket_timeout'] = 15
     with YoutubeDL(opts) as ydl:
         return ydl.extract_info(url, download=False)
 
@@ -323,11 +364,17 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def check_sub_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query
-    await q.answer()
+    # ملاحظة: لا يمكن استدعاء q.answer() أكثر من مرة واحدة لكل ضغطة زر،
+    # لذلك نتحقق أولاً من حالة الاشتراك ثم نستدعي answer() مرة واحدة فقط بالشكل المناسب.
     if await check_user_subscription(context.bot, q.from_user.id):
-        await q.message.delete()
+        await q.answer("✅ تم التحقق بنجاح!")
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
         await q.message.reply_text("✅ تم التحقق! أرسل رابطك أو كلمة البحث الآن.")
     else:
+        # فقط تنبيه منبثق (Popup) بدون أي رسالة إضافية داخل المحادثة
         await q.answer("❌ لم تشترك بالقناة بعد!", show_alert=True)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -336,7 +383,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     track_user_activity(user.id)
 
     if not await check_user_subscription(context.bot, user.id):
-        await update.message.reply_text("🚧 يرجى الاشتراك في القناة أولاً.")
+        markup = InlineKeyboardMarkup([
+            [InlineKeyboardButton("اشترك في القناة 📡", url=f"https://t.me/{CHANNEL.lstrip('@')}")],
+            [InlineKeyboardButton("تحقق 🔍", callback_data="check_sub")]
+        ])
+        await update.message.reply_text("🚧 يرجى الاشتراك في القناة أولاً.", reply_markup=markup)
         return
 
     text = update.message.text.strip()
@@ -503,42 +554,38 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
         out_tmpl = f"zendown_{sid}.%(ext)s"
         
         if action == "vid":
-            opts = {
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
+            opts = _get_common_ydl_opts()
+            opts.update({
+                # الأولوية دائماً لترميز H.264 (avc1) + AAC (m4a) لأنه المتوافق 100% مع
+                # معارض الصور بكل أنواع الهواتف. الخيارات الأخيرة (bv*+ba/b) احتياطية فقط
+                # لحالات نادرة مثل سلايدشو تيك توك، لتفادي الكراش بدون التضحية بالتوافقية.
+                'format': (
+                    'bestvideo[vcodec^=avc1][ext=mp4]+bestaudio[acodec^=mp4a][ext=m4a]/'
+                    'best[vcodec^=avc1][ext=mp4]/'
+                    'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/'
+                    'bv*+ba/b'
+                ),
                 'outtmpl': out_tmpl,
-                'quiet': True,
-                'no_warnings': True,
-                'geo_bypass': True,
-                'nocheckcertificate': True,
-                'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)',
-                'extractor_args': {
-                    'youtube': {'player_client': ['android', 'ios', 'web']},
-                    'twitter': {'api': ['syndication']}
-                }
-            }
+                'merge_output_format': 'mp4',
+            })
         elif action == "aud":
-            opts = {
+            opts = _get_common_ydl_opts()
+            opts.update({
                 'format': 'bestaudio/best',
                 'outtmpl': out_tmpl,
                 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'mp3', 'preferredquality': '192'}],
-                'quiet': True,
-                'no_warnings': True,
-                'geo_bypass': True,
-                'nocheckcertificate': True
-            }
+            })
         else:
-            opts = {
+            opts = _get_common_ydl_opts()
+            opts.update({
                 'format': 'bestaudio/best',
                 'outtmpl': out_tmpl,
                 'postprocessors': [{'key': 'FFmpegExtractAudio', 'preferredcodec': 'vorbis'}],
-                'quiet': True,
-                'no_warnings': True,
-                'geo_bypass': True,
-                'nocheckcertificate': True
-            }
+            })
 
         file_path = None
-        max_retries = 3 
+        downloaded_path = None  # يحتفظ بمسار الملف الأصلي كما هو حتى لو تغيّر file_path لاحقاً بعد الضغط
+        max_retries = 3
         success_download = False
 
         for attempt in range(max_retries):
@@ -548,10 +595,17 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                 if action == "voc": file_path = file_path.rsplit('.', 1)[0] + '.ogg'
                 
                 if os.path.exists(file_path):
+                    downloaded_path = file_path
                     success_download = True
                     break
             except Exception as e:
+                err_str = str(e).lower()
                 logger.error(f"Attempt {attempt + 1} failed: {e}")
+
+                # لو الخطأ يدل على أن الفيديو محمي/خاص/محذوف نهائياً، لا فائدة من إعادة المحاولة
+                if any(marker in err_str for marker in NON_RETRYABLE_MARKERS):
+                    break
+
                 if attempt < max_retries - 1:
                     await status_msg.edit_text(f"⚠️ جاري المحاولة مرة أخرى ({attempt + 2}/{max_retries})...")
                     await asyncio.sleep(2) 
@@ -590,9 +644,12 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
             track_download_status(False)
             await status_msg.edit_text("❌ حدث خطأ أثناء معالجة وإرسال الملف.")
         finally:
-            if file_path and os.path.exists(file_path):
-                try: os.remove(file_path)
-                except Exception: pass
+            # نحذف كل من الملف الأصلي والملف المضغوط (إن وُجد) لمنع تراكم الملفات على القرص
+            paths_to_clean = {p for p in (file_path, downloaded_path) if p}
+            for p in paths_to_clean:
+                if os.path.exists(p):
+                    try: os.remove(p)
+                    except Exception: pass
 
 # ================== التشغيل الرئيسي ==================
 def main():
@@ -617,3 +674,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
