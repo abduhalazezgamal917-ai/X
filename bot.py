@@ -4,17 +4,16 @@ import asyncio
 import logging
 import os
 import uuid
-import threading
 import json
 import urllib.request
 import time
 import random
 from datetime import datetime, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
 from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, ContextTypes, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 )
+from health_server import run_health_server_in_background
 
 # تحديث تلقائي لمكتبة yt-dlp
 try:
@@ -28,25 +27,9 @@ except Exception as e:
 from yt_dlp import YoutubeDL
 
 # ================== سيرفر الصحة لإرضاء المنصة (Render/UptimeRobot) ==================
-class DummyHealthCheckHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
-        self.send_response(200)
-        self.end_headers()
-        self.wfile.write(b"ZenDown_Bot is Running!")
-        
-    def do_HEAD(self):
-        self.send_response(200)
-        self.end_headers()
+# تم نقل الكود الفعلي إلى health_server.py — هذا فقط يشغّله في الخلفية
+run_health_server_in_background()
 
-    def log_message(self, format, *args):
-        return
-
-def start_dummy_server():
-    port = int(os.environ.get("PORT", 8080))
-    server = HTTPServer(("0.0.0.0", port), DummyHealthCheckHandler)
-    server.serve_forever()
-
-threading.Thread(target=start_dummy_server, daemon=True).start()
 
 # ================== الإعدادات والتكوين ==================
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -674,5 +657,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
