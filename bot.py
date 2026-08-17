@@ -6,6 +6,7 @@ import os
 import uuid
 import json
 import urllib.request
+import urllib.parse
 import time
 import random
 from datetime import datetime, timedelta
@@ -275,7 +276,10 @@ def _get_common_ydl_opts():
         'retries': 5,
         'fragment_retries': 5,
         'extractor_retries': 3,
-        'concurrent_fragment_downloads': 1,
+        # تحميل عدة أجزاء (fragments) بالتوازي يسرّع التحميل فعلياً لأنه اختناق شبكة
+        # وليس معالج (I/O-bound)، فهذا آمن تماماً ولا يرهق CPU/RAM على السيرفر المجاني
+        'concurrent_fragment_downloads': 4,
+        'http_chunk_size': 10 * 1024 * 1024,  # تحميل الملف على شكل قطع 10MB لتسريع النقل وتفادي التقطيع
         'user_agent': random.choice(USER_AGENTS),
         'http_headers': {
             'Accept-Language': 'en-US,en;q=0.9,ar;q=0.8',
@@ -328,6 +332,53 @@ def _compress_video_sync(input_file, output_file):
     except Exception:
         pass # حدث خطأ أو FFMPEG غير مثبت
     return input_file
+
+def _faststart_remux_sync(input_file, output_file):
+    """
+    يعيد ترتيب هيكل حاوية mp4 بحيث توضع بيانات moov في البداية (faststart).
+    هذا لا يعيد ترميز الفيديو إطلاقاً (-c copy = نسخ سريع جداً بدون أي عبء على المعالج)،
+    لكنه يحل مشكلة شائعة جداً: فيديوهات (خصوصاً من إنستغرام) لا تُحفظ بشكل سليم في معرض
+    الهاتف أو تظهر "تالفة" لأن بيانات moov موجودة بنهاية الملف بدل بدايته.
+    """
+    cmd = [
+        'ffmpeg', '-y', '-i', input_file,
+        '-c', 'copy',
+        '-movflags', '+faststart',
+        '-threads', '1',
+        output_file
+    ]
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT, timeout=60)
+        if os.path.exists(output_file) and os.path.getsize(output_file) > 0:
+            return output_file
+    except Exception:
+        pass
+    return input_file
+
+def _probe_video_metadata_sync(input_file):
+    """
+    يجلب المدة/العرض/الارتفاع بسرعة عبر ffprobe لتمريرها لتيليجرام مع الفيديو.
+    تزويد تيليجرام بهذه البيانات مسبقاً يسرّع عرض المقطع وبدء التشغيل عند المستلم
+    بدل ما يضطر تطبيق تيليجرام لتحليلها بنفسه بعد اكتمال الرفع.
+    """
+    try:
+        cmd = [
+            'ffprobe', '-v', 'error', '-select_streams', 'v:0',
+            '-show_entries', 'stream=width,height:format=duration',
+            '-of', 'json', input_file
+        ]
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=15)
+        data = json.loads(result.stdout.decode())
+        width = data.get('streams', [{}])[0].get('width')
+        height = data.get('streams', [{}])[0].get('height')
+        duration = data.get('format', {}).get('duration')
+        return (
+            int(float(duration)) if duration else None,
+            int(width) if width else None,
+            int(height) if height else None,
+        )
+    except Exception:
+        return None, None, None
 
 # ================== استقبال الرسائل والبدء ==================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -428,8 +479,14 @@ def build_search_page(sid, page):
         buttons.append(InlineKeyboardButton("التالي »", callback_data=f"page_{sid}_{page+1}"))
     if page > 0:
         buttons.append(InlineKeyboardButton("« السابق", callback_data=f"page_{sid}_{page-1}"))
-        
-    markup = InlineKeyboardMarkup([buttons]) if buttons else None
+
+    tiktok_url = "https://www.tiktok.com/search?q=" + urllib.parse.quote(query)
+    rows = []
+    if buttons:
+        rows.append(buttons)
+    rows.append([InlineKeyboardButton("البحث في تيك توك 🎵", url=tiktok_url)])
+
+    markup = InlineKeyboardMarkup(rows)
     return text, markup
 
 async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
@@ -568,6 +625,7 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
 
         file_path = None
         downloaded_path = None  # يحتفظ بمسار الملف الأصلي كما هو حتى لو تغيّر file_path لاحقاً بعد الضغط
+        temp_paths = set()  # كل نسخة وسيطة (مضغوطة/معاد ترتيبها) تُسجّل هنا لضمان حذفها لاحقاً
         max_retries = 3
         success_download = False
 
@@ -595,14 +653,28 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                 else:
                     pass
 
+        duration = width = height = None
+
         try:
             if success_download and file_path and os.path.exists(file_path):
                 
+                # إعادة ترتيب حاوية mp4 (faststart) لكل فيديو — نسخ سريع بدون إعادة ترميز،
+                # يحل مشكلة عدم حفظ المقطع بشكل سليم في معرض الهاتف (خصوصاً إنستغرام)
+                if action == "vid":
+                    fs_path = file_path.rsplit('.', 1)[0] + '_fs.mp4'
+                    remuxed = await asyncio.to_thread(_faststart_remux_sync, file_path, fs_path)
+                    if remuxed != file_path:
+                        temp_paths.add(remuxed)
+                        file_path = remuxed
+
                 # مرحلة الضغط
                 if action == "vid" and (os.path.getsize(file_path) / (1024*1024)) > 45:
                     await status_msg.edit_text("🗜 حجم المقطع كبير.. جاري الضغط السريع (قد يستغرق دقيقتين)...")
                     comp_path = file_path.rsplit('.', 1)[0] + '_c.mp4'
-                    file_path = await asyncio.to_thread(_compress_video_sync, file_path, comp_path)
+                    compressed = await asyncio.to_thread(_compress_video_sync, file_path, comp_path)
+                    if compressed != file_path:
+                        temp_paths.add(compressed)
+                        file_path = compressed
 
                 # جدار حماية تيليجرام: فحص الحجم النهائي لمنع التعليق الوهمي أثناء الرفع
                 final_size_mb = os.path.getsize(file_path) / (1024 * 1024)
@@ -611,9 +683,17 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
                     track_download_status(False)
                     return # نخرج من العملية فوراً
 
+                # جلب المدة/الأبعاد لتسريع عرض المقطع عند المستلم (اختياري، بدون تعطيل الإرسال لو فشل)
+                if action == "vid":
+                    duration, width, height = await asyncio.to_thread(_probe_video_metadata_sync, file_path)
+
                 await status_msg.edit_text("📤 جاري إرسال الملف...")
                 with open(file_path, 'rb') as f:
-                    if action == "vid": await q.message.reply_video(video=f, caption="🎬 تم بواسطة @ZenDown_Bot", supports_streaming=True)
+                    if action == "vid":
+                        await q.message.reply_video(
+                            video=f, caption="🎬 تم بواسطة @ZenDown_Bot", supports_streaming=True,
+                            duration=duration, width=width, height=height,
+                        )
                     elif action == "aud": await q.message.reply_audio(audio=f, caption="🎵 تم بواسطة @ZenDown_Bot")
                     elif action == "voc": await q.message.reply_voice(voice=f, caption="🎙 تم بواسطة @ZenDown_Bot")
 
@@ -627,8 +707,8 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
             track_download_status(False)
             await status_msg.edit_text("❌ حدث خطأ أثناء معالجة وإرسال الملف.")
         finally:
-            # نحذف كل من الملف الأصلي والملف المضغوط (إن وُجد) لمنع تراكم الملفات على القرص
-            paths_to_clean = {p for p in (file_path, downloaded_path) if p}
+            # نحذف الملف الأصلي وكل نسخة وسيطة (معاد ترتيبها/مضغوطة) لمنع تراكم الملفات على القرص
+            paths_to_clean = {p for p in ({file_path, downloaded_path} | temp_paths) if p}
             for p in paths_to_clean:
                 if os.path.exists(p):
                     try: os.remove(p)
@@ -636,7 +716,17 @@ async def download_action_callback(update: Update, context: ContextTypes.DEFAULT
 
 # ================== التشغيل الرئيسي ==================
 def main():
-    app = ApplicationBuilder().token(TOKEN).concurrent_updates(True).build()
+    # مهلات أطول من الافتراضي لضمان اكتمال رفع الفيديوهات الكبيرة دون فشل/انقطاع مبكر
+    app = (
+        ApplicationBuilder()
+        .token(TOKEN)
+        .concurrent_updates(True)
+        .connect_timeout(20)
+        .read_timeout(60)
+        .write_timeout(60)
+        .pool_timeout(20)
+        .build()
+    )
 
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("broadcast", broadcast_command))
@@ -657,6 +747,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
