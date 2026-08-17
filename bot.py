@@ -6,7 +6,6 @@ import os
 import uuid
 import json
 import urllib.request
-import urllib.parse
 import time
 import random
 from datetime import datetime, timedelta
@@ -480,13 +479,7 @@ def build_search_page(sid, page):
     if page > 0:
         buttons.append(InlineKeyboardButton("« السابق", callback_data=f"page_{sid}_{page-1}"))
 
-    tiktok_url = "https://www.tiktok.com/search?q=" + urllib.parse.quote(query)
-    rows = []
-    if buttons:
-        rows.append(buttons)
-    rows.append([InlineKeyboardButton("البحث في تيك توك 🎵", url=tiktok_url)])
-
-    markup = InlineKeyboardMarkup(rows)
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
     return text, markup
 
 async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_TYPE, query: str):
@@ -747,6 +740,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
