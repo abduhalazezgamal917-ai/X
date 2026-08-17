@@ -292,7 +292,6 @@ def _get_common_ydl_opts():
                 'player_client': ['android', 'ios', 'tv_embedded', 'web_safari'],
                 'player_skip': ['webpage', 'configs'],
             },
-            'twitter': {'api': ['syndication']},
             'tiktok': {'app_info': ['7355728856979712262']},
         },
     }
@@ -740,6 +739,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
