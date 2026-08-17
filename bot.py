@@ -43,9 +43,40 @@ ADMIN_ID = 6043858925
 MAX_CONCURRENT_DOWNLOADS = 1 # تم تقليله لـ 1 لضمان استقرار السيرفر المجاني
 DOWNLOAD_SEMAPHORE = asyncio.Semaphore(MAX_CONCURRENT_DOWNLOADS)
 
-# ذاكرة مؤقتة
-SEARCH_CACHE = {}
-URL_CACHE = {}
+# ذاكرة مؤقتة (تُحفظ على القرص لتنجو من إعادة التشغيل: نوم Render التلقائي أو أي Deploy جديد)
+CACHE_FILE = "session_cache.json"
+MAX_CACHE_ENTRIES = 300  # سقف بسيط لمنع تضخم الملف على المدى الطويل
+
+def _load_cache():
+    if os.path.exists(CACHE_FILE):
+        try:
+            with open(CACHE_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                return data.get("url_cache", {}), data.get("search_cache", {})
+        except Exception:
+            pass
+    return {}, {}
+
+URL_CACHE, SEARCH_CACHE = _load_cache()
+
+def _save_cache():
+    try:
+        with open(CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump({"url_cache": URL_CACHE, "search_cache": SEARCH_CACHE}, f, ensure_ascii=False)
+    except Exception:
+        pass
+
+def cache_url(sid, url):
+    URL_CACHE[sid] = url
+    if len(URL_CACHE) > MAX_CACHE_ENTRIES:
+        URL_CACHE.pop(next(iter(URL_CACHE)))  # نحذف أقدم إدخال (ترتيب الإدخال محفوظ بالـ dict)
+    _save_cache()
+
+def cache_search(sid, data):
+    SEARCH_CACHE[sid] = data
+    if len(SEARCH_CACHE) > MAX_CACHE_ENTRIES:
+        SEARCH_CACHE.pop(next(iter(SEARCH_CACHE)))
+    _save_cache()
 
 # ================== نظام الإحصائيات ==================
 STATS_FILE = "stats.json"
@@ -500,7 +531,7 @@ async def perform_youtube_search(update: Update, context: ContextTypes.DEFAULT_T
         return
 
     sid = str(uuid.uuid4())[:8]
-    SEARCH_CACHE[sid] = {'query': query, 'entries': entries}
+    cache_search(sid, {'query': query, 'entries': entries})
     
     text, markup = build_search_page(sid, 0)
     await msg.edit_text(text, parse_mode="HTML", reply_markup=markup)
@@ -549,7 +580,7 @@ async def process_link_info(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         uploader = "الرابط المرفق"
 
     sid = str(uuid.uuid4())[:8]
-    URL_CACHE[sid] = url
+    cache_url(sid, url)
 
     caption = f"🎬 <b>{title}</b>\n👤 المصدر: {uploader}"
     markup = InlineKeyboardMarkup([
@@ -739,6 +770,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
 
